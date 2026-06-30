@@ -1,0 +1,459 @@
+/* ===========================================================================
+   Project Hours EAC Tracker - script.js
+   ---------------------------------------------------------------------------
+   Everything lives in localStorage under the key STORAGE_KEY.
+   Data shape:
+   {
+     nextProjectNumber: 6,
+     projects: [
+       {
+         id: "p1",
+         name: "Project 1",
+         notes: "",
+         phases: [
+           { id: "0", group: "30% Design", task: "Design Drawings",
+             bac: 416, ac: 0, pct: 0, etc: "" },
+           ...
+         ]
+       },
+       ...
+     ]
+   }
+   =========================================================================== */
+
+const STORAGE_KEY = "eacTrackerData";
+let PHASES_TEMPLATE = [];   // fetched once from /api/phases
+let STATE = null;
+let currentProjectId = null;
+
+/* ---------------------------------------------------------------------- */
+/* Bootstrapping                                                          */
+/* ---------------------------------------------------------------------- */
+async function init() {
+  await loadPhaseTemplate();
+  loadState();
+  bindGlobalEvents();
+  renderDashboard();
+}
+
+async function loadPhaseTemplate() {
+  const res = await fetch("/api/phases");
+  PHASES_TEMPLATE = await res.json();
+}
+
+function blankPhasesForProject() {
+  return PHASES_TEMPLATE.map(p => ({
+    id: p.id,
+    group: p.group,
+    task: p.task,
+    bac: 0,
+    ac: 0,
+    pct: 0,
+    etc: ""
+  }));
+}
+
+function loadState() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (raw) {
+    try {
+      STATE = JSON.parse(raw);
+      // Safety: make sure projects/phase arrays exist
+      if (!STATE.projects) STATE.projects = [];
+      return;
+    } catch (e) {
+      console.warn("Corrupt saved data, resetting.", e);
+    }
+  }
+  // First run -> create 5 default projects
+  STATE = { nextProjectNumber: 6, projects: [] };
+  for (let i = 1; i <= 5; i++) {
+    STATE.projects.push(makeProject(`Project ${i}`));
+  }
+  saveState();
+}
+
+function makeProject(name) {
+  return {
+    id: "proj_" + Math.random().toString(36).slice(2, 10),
+    name: name,
+    notes: "",
+    phases: blankPhasesForProject()
+  };
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(STATE));
+}
+
+/* ---------------------------------------------------------------------- */
+/* EAC Calculations                                                       */
+/* ---------------------------------------------------------------------- */
+function calcRow(row) {
+  const bac = Number(row.bac) || 0;
+  const ac = Number(row.ac) || 0;
+  const pct = Number(row.pct) || 0;
+  const etcRaw = row.etc;
+  const hasEtc = etcRaw !== "" && etcRaw !== null && etcRaw !== undefined && !isNaN(etcRaw);
+  const etc = hasEtc ? Number(etcRaw) : null;
+
+  const ev = bac * (pct / 100);
+  const cpi = ac > 0 ? (ev / ac) : null;
+
+  const eac1 = (cpi && cpi > 0) ? (bac / cpi) : null;
+  const eac2 = ac + (bac - ev);
+  const eac3 = hasEtc ? (ac + etc) : null;
+
+  let eacMain, method;
+  if (hasEtc) {
+    eacMain = eac3; method = "Method 3";
+  } else if (eac1 !== null) {
+    eacMain = eac1; method = "Method 1";
+  } else {
+    eacMain = eac2; method = "Method 2";
+  }
+
+  const variance = eacMain - bac;
+
+  return { ev, cpi, eac1, eac2, eac3, eacMain, method, variance };
+}
+
+function statusFor(variance, bac) {
+  if (variance <= 0) return "On Track";
+  if (bac > 0 && variance <= 0.10 * bac) return "Watch";
+  return "Over Budget";
+}
+
+function statusClass(status) {
+  if (status === "On Track") return "green";
+  if (status === "Watch") return "yellow";
+  return "red";
+}
+
+function projectTotals(project) {
+  let totalBac = 0, totalAc = 0, totalEv = 0, totalEac = 0;
+  project.phases.forEach(r => {
+    const c = calcRow(r);
+    totalBac += Number(r.bac) || 0;
+    totalAc += Number(r.ac) || 0;
+    totalEv += c.ev;
+    totalEac += c.eacMain;
+  });
+  const overallPct = totalBac > 0 ? (totalEv / totalBac * 100) : 0;
+  const overallCpi = totalAc > 0 ? (totalEv / totalAc) : null;
+  const totalVariance = totalEac - totalBac;
+  const status = statusFor(totalVariance, totalBac);
+  return { totalBac, totalAc, totalEv, overallPct, overallCpi, totalEac, totalVariance, status };
+}
+
+/* ---------------------------------------------------------------------- */
+/* Number formatting helpers                                              */
+/* ---------------------------------------------------------------------- */
+const fmt1 = n => (n === null || n === undefined || isNaN(n)) ? "N/A" : n.toFixed(1);
+const fmt0 = n => (n === null || n === undefined || isNaN(n)) ? "N/A" : Math.round(n).toString();
+const fmt2 = n => (n === null || n === undefined || isNaN(n)) ? "N/A" : n.toFixed(2);
+const fmtPct = n => (n === null || n === undefined || isNaN(n)) ? "0.0%" : n.toFixed(1) + "%";
+const fmtSigned = n => (n === null || n === undefined || isNaN(n)) ? "N/A" : (n > 0 ? "+" : "") + Math.round(n);
+
+/* ---------------------------------------------------------------------- */
+/* Rendering: Dashboard                                                   */
+/* ---------------------------------------------------------------------- */
+function renderDashboard() {
+  showView("dashboard");
+  const body = document.getElementById("dashboardBody");
+  body.innerHTML = "";
+
+  STATE.projects.forEach(project => {
+    const t = projectTotals(project);
+    const cls = statusClass(t.status);
+    const tr = document.createElement("tr");
+    tr.className = "row-" + cls;
+    tr.innerHTML = `
+      <td class="proj-name" data-id="${project.id}">${escapeHtml(project.name)}</td>
+      <td class="num">${fmt0(t.totalBac)}</td>
+      <td class="num">${fmt0(t.totalAc)}</td>
+      <td class="num">${fmtPct(t.overallPct)}</td>
+      <td class="num">${fmt0(t.totalEac)}</td>
+      <td class="num">${fmtSigned(t.totalVariance)}</td>
+      <td><span class="badge ${cls}"><span class="dot ${cls}"></span>${t.status}</span></td>
+      <td><span class="open-link" data-id="${project.id}">Open →</span></td>
+    `;
+    body.appendChild(tr);
+  });
+
+  body.querySelectorAll("[data-id]").forEach(el => {
+    el.addEventListener("click", () => openProject(el.dataset.id));
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Rendering: Project detail view                                         */
+/* ---------------------------------------------------------------------- */
+function openProject(id) {
+  currentProjectId = id;
+  showView("project");
+  renderProject();
+}
+
+function getCurrentProject() {
+  return STATE.projects.find(p => p.id === currentProjectId);
+}
+
+function renderProject() {
+  const project = getCurrentProject();
+  if (!project) { renderDashboard(); return; }
+
+  document.getElementById("projectNameInput").value = project.name;
+  document.getElementById("notesArea").value = project.notes || "";
+
+  renderSummaryCards(project);
+  renderPhasesTable(project);
+}
+
+function renderSummaryCards(project) {
+  const t = projectTotals(project);
+  const cls = statusClass(t.status);
+  const wrap = document.getElementById("summaryCards");
+  wrap.innerHTML = `
+    <div class="card"><div class="label">Total Planned Hours</div><div class="value">${fmt0(t.totalBac)}</div></div>
+    <div class="card"><div class="label">Total Actual Hours</div><div class="value">${fmt0(t.totalAc)}</div></div>
+    <div class="card"><div class="label">Overall % Complete</div><div class="value">${fmtPct(t.overallPct)}</div></div>
+    <div class="card"><div class="label">Total EV</div><div class="value">${fmt0(t.totalEv)}</div></div>
+    <div class="card"><div class="label">Overall CPI</div><div class="value">${t.overallCpi ? fmt2(t.overallCpi) : "N/A"}</div></div>
+    <div class="card"><div class="label">Total EAC</div><div class="value">${fmt0(t.totalEac)}</div></div>
+    <div class="card"><div class="label">Total Variance</div><div class="value">${fmtSigned(t.totalVariance)}</div></div>
+    <div class="card status-card">
+      <div class="label">Status</div>
+      <div class="value"><span class="badge ${cls}"><span class="dot ${cls}"></span>${t.status}</span></div>
+    </div>
+  `;
+}
+
+function renderPhasesTable(project) {
+  const body = document.getElementById("phasesBody");
+  body.innerHTML = "";
+
+  let lastGroup = null;
+
+  project.phases.forEach((row, idx) => {
+    const c = calcRow(row);
+    const cls = statusClass(statusFor(c.variance, Number(row.bac) || 0));
+    const isNewGroup = row.group !== lastGroup;
+    lastGroup = row.group;
+
+    const tr = document.createElement("tr");
+    if (isNewGroup) tr.classList.add("group-start");
+
+    tr.innerHTML = `
+      <td>${isNewGroup ? `<span class="group-tag">${escapeHtml(row.group)}</span>` : ""}</td>
+      <td>${escapeHtml(row.task)}</td>
+      <td><input type="number" min="0" step="1" class="cell-input" data-field="bac" data-idx="${idx}" value="${row.bac ?? 0}"></td>
+      <td><input type="number" min="0" step="1" class="cell-input" data-field="ac" data-idx="${idx}" value="${row.ac ?? 0}"></td>
+      <td><input type="number" min="0" max="100" step="1" class="cell-input" data-field="pct" data-idx="${idx}" value="${row.pct ?? 0}"></td>
+      <td><input type="number" min="0" step="1" class="cell-input" data-field="etc" data-idx="${idx}" value="${row.etc ?? ""}" placeholder="-"></td>
+      <td class="num calc-val">${fmt0(c.ev)}</td>
+      <td class="num calc-val">${c.cpi !== null ? fmt2(c.cpi) : '<span class="muted">N/A</span>'}</td>
+      <td class="num calc-val">${c.eac1 !== null ? fmt0(c.eac1) : '<span class="muted">N/A</span>'}</td>
+      <td class="num calc-val">${fmt0(c.eac2)}</td>
+      <td class="num calc-val">${c.eac3 !== null ? fmt0(c.eac3) : '<span class="muted">-</span>'}</td>
+      <td class="num"><span class="eac-main badge ${cls}">${fmtSigned(c.variance)}</span></td>
+    `;
+    body.appendChild(tr);
+  });
+
+  body.querySelectorAll("input.cell-input").forEach(input => {
+    input.addEventListener("input", onCellEdit);
+  });
+}
+
+function onCellEdit(e) {
+  const idx = Number(e.target.dataset.idx);
+  const field = e.target.dataset.field;
+  const project = getCurrentProject();
+  let val = e.target.value;
+
+  if (field === "etc") {
+    project.phases[idx].etc = val === "" ? "" : Number(val);
+  } else {
+    val = Number(val);
+    if (field === "pct") val = Math.max(0, Math.min(100, val));
+    if (val < 0 || isNaN(val)) val = 0;
+    project.phases[idx][field] = val;
+  }
+
+  saveState();
+  renderSummaryCards(project);
+  renderPhasesTable(project); // re-render to update calculated columns
+}
+
+/* ---------------------------------------------------------------------- */
+/* View switching                                                         */
+/* ---------------------------------------------------------------------- */
+function showView(view) {
+  document.getElementById("dashboardView").classList.toggle("hidden", view !== "dashboard");
+  document.getElementById("projectView").classList.toggle("hidden", view !== "project");
+  document.getElementById("btnDashboard").classList.toggle("active", view === "dashboard");
+}
+
+/* ---------------------------------------------------------------------- */
+/* Project CRUD                                                           */
+/* ---------------------------------------------------------------------- */
+function addProject() {
+  const name = `Project ${STATE.nextProjectNumber}`;
+  STATE.nextProjectNumber += 1;
+  const project = makeProject(name);
+  STATE.projects.push(project);
+  saveState();
+  renderDashboard();
+  toast(`${name} added`);
+}
+
+function renameProject(newName) {
+  const project = getCurrentProject();
+  if (!project) return;
+  const trimmed = newName.trim();
+  project.name = trimmed || project.name;
+  saveState();
+}
+
+function deleteProject() {
+  const project = getCurrentProject();
+  if (!project) return;
+  if (!confirm(`Delete "${project.name}"? This cannot be undone.`)) return;
+  STATE.projects = STATE.projects.filter(p => p.id !== project.id);
+  saveState();
+  currentProjectId = null;
+  renderDashboard();
+  toast("Project deleted");
+}
+
+/* ---------------------------------------------------------------------- */
+/* Export / Import                                                        */
+/* ---------------------------------------------------------------------- */
+async function exportExcel() {
+  toast("Generating Excel file...");
+  const res = await fetch("/api/export/excel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projects: STATE.projects })
+  });
+  await downloadBlob(res, "project_hours_eac.xlsx");
+}
+
+async function exportPdf() {
+  toast("Generating PDF report...");
+  const res = await fetch("/api/export/pdf", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projects: STATE.projects })
+  });
+  await downloadBlob(res, "project_hours_eac.pdf");
+}
+
+async function downloadBlob(res, fallbackName) {
+  if (!res.ok) { toast("Export failed."); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fallbackName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast("Download started");
+}
+
+function exportJson() {
+  const blob = new Blob([JSON.stringify(STATE, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "project_hours_eac_data.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast("JSON exported");
+}
+
+function importJson(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      if (!parsed.projects || !Array.isArray(parsed.projects)) {
+        throw new Error("Invalid file format");
+      }
+      STATE = parsed;
+      saveState();
+      currentProjectId = null;
+      renderDashboard();
+      toast("Data imported successfully");
+    } catch (err) {
+      alert("Could not import file: " + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function resetAllData() {
+  if (!confirm("Reset ALL data? This will delete every project and cannot be undone.")) return;
+  localStorage.removeItem(STORAGE_KEY);
+  loadState();
+  currentProjectId = null;
+  renderDashboard();
+  toast("All data reset to defaults");
+}
+
+/* ---------------------------------------------------------------------- */
+/* Misc helpers                                                           */
+/* ---------------------------------------------------------------------- */
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add("hidden"), 2200);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Event bindings                                                         */
+/* ---------------------------------------------------------------------- */
+function bindGlobalEvents() {
+  document.getElementById("btnDashboard").addEventListener("click", renderDashboard);
+  document.getElementById("btnAddProject").addEventListener("click", addProject);
+  document.getElementById("btnBack").addEventListener("click", renderDashboard);
+  document.getElementById("btnDeleteProject").addEventListener("click", deleteProject);
+
+  document.getElementById("projectNameInput").addEventListener("input", (e) => {
+    renameProject(e.target.value);
+    // live-update dashboard name without full re-render
+  });
+  document.getElementById("projectNameInput").addEventListener("blur", renderDashboard);
+
+  document.getElementById("notesArea").addEventListener("input", (e) => {
+    const project = getCurrentProject();
+    if (project) { project.notes = e.target.value; saveState(); }
+  });
+
+  document.getElementById("btnExportExcel").addEventListener("click", exportExcel);
+  document.getElementById("btnExportPdf").addEventListener("click", exportPdf);
+  document.getElementById("btnExportJson").addEventListener("click", exportJson);
+  document.getElementById("btnReset").addEventListener("click", resetAllData);
+
+  document.getElementById("fileImport").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (file) importJson(file);
+    e.target.value = "";
+  });
+}
+
+document.addEventListener("DOMContentLoaded", init);
