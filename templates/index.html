@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project Key-Date Tracker — Gridworks Engineering</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="shell">
+  <div class="titleblock">
+    <div class="tb-brand">
+      <div class="tb-flag">&#9873;</div>
+      <div>
+        <div class="tb-title">PROJECT KEY-DATE TRACKER</div>
+        <div class="tb-sub">GRIDWORKS ENGINEERING</div>
+      </div>
+    </div>
+    <div class="tb-cell"><div class="tb-label">SHEET</div><div class="tb-value">1 OF 1</div></div>
+    <div class="tb-cell"><div class="tb-label">PROJECTS</div><div class="tb-value" id="tb-project-count">00</div></div>
+    <div class="tb-cell"><div class="tb-label">DATE</div><div class="tb-value" id="tb-date"></div></div>
+    <div class="tb-cell tb-refresh">
+      <button id="reload-btn" title="Reload data">&#8635;</button>
+    </div>
+  </div>
+
+  <div id="error-banner" class="error-banner" style="display:none;"></div>
+
+  <div class="content">
+    <div class="stat-row" id="stat-row"></div>
+
+    <div class="main-grid">
+      <div class="col-main">
+        <div class="section-header">
+          <div class="section-title"><span class="dot"></span>KEY DATES</div>
+          <button class="btn-primary" id="add-date-btn">+ ADD DATE</button>
+        </div>
+
+        <div class="filters">
+          <div class="search-wrap">
+            <span class="search-icon">&#128269;</span>
+            <input id="search-input" placeholder="Search dates, projects, owners…">
+          </div>
+          <select id="filter-project"><option value="all">All projects</option></select>
+          <select id="filter-type">
+            <option value="all">All types</option>
+            {% for t in types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+          </select>
+          <select id="filter-status">
+            <option value="all">All statuses</option>
+            <option value="overdue">OVERDUE</option>
+            <option value="due-soon">DUE THIS WEEK</option>
+            <option value="upcoming">DUE THIS MONTH</option>
+            <option value="scheduled">SCHEDULED</option>
+          </select>
+          <label class="checkbox-label">
+            <input type="checkbox" id="show-complete"> SHOW COMPLETE
+          </label>
+        </div>
+
+        <div id="date-table" class="date-table"></div>
+      </div>
+
+      <div class="col-side">
+        <div class="section-header">
+          <div class="section-title"><span class="dot"></span>PROJECTS</div>
+          <button class="btn-ghost" id="add-project-btn">+ NEW</button>
+        </div>
+        <div id="project-list" class="project-list"></div>
+      </div>
+    </div>
+
+    <div class="legend" id="legend"></div>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+
+<script>
+  window.APP_CONFIG = {
+    phases: {{ phases|tojson }},
+    types: {{ types|tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
